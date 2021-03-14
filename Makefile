@@ -32,37 +32,61 @@ else
 endif
 
 ROOT=$(shell pwd)
-# Flags for preprocessor
-LDFLAGS = -lm -lc
 
-CPPFLAGS += -I$(ROOT) -I$(ROOT)/contrib
+CPPFLAGS += -I$(ROOT) -I$(ROOT)/contrib -I$(ROOT)/deps/t-digest-c/src
 SRCDIR := $(ROOT)/src
 MODULE_OBJ = $(SRCDIR)/rebloom.o
 MODULE_SO = $(ROOT)/redisbloom.so
+LIBTDIGEST_LIBDIR = $(ROOT)/deps/t-digest-c/build/src
+LIBTDIGEST = $(LIBTDIGEST_LIBDIR)/libtdigest_static.a
+
+# Flags for preprocessor
+MODULE_LDFLAGS = -lm -lc -L$(LIBTDIGEST_LIBDIR) -ltdigest_static
 
 DEPS = $(ROOT)/contrib/MurmurHash2.o \
 	   $(ROOT)/rmutil/util.o \
 	   $(SRCDIR)/sb.o \
 	   $(SRCDIR)/cf.o \
 	   $(SRCDIR)/rm_topk.o \
+	   $(SRCDIR)/rm_tdigest.o \
 	   $(SRCDIR)/topk.o \
 	   $(SRCDIR)/rm_cms.o \
 	   $(SRCDIR)/cms.o 
+
+DEPS_TEST = $(ROOT)/contrib/MurmurHash2.o \
+	   $(ROOT)/rmutil/util.o \
+	   $(SRCDIR)/sb.o \
+	   $(SRCDIR)/cf.o \
+	   $(SRCDIR)/rm_topk.o \
+	   $(SRCDIR)/topk.o \
+	   $(SRCDIR)/rm_cms.o \
+	   $(SRCDIR)/cms.o
 
 export 
 
 ifeq ($(COV),1)
 CFLAGS += -fprofile-arcs -ftest-coverage
-LDFLAGS += -fprofile-arcs
+MODULE_LDFLAGS += -fprofile-arcs
 endif
 
 all: $(MODULE_SO)
 
-$(MODULE_SO): $(MODULE_OBJ) $(DEPS)
-	$(LD) $^ -o $@ $(SHOBJ_LDFLAGS) $(LDFLAGS)
+$(LIBTDIGEST):
+	$(MAKE) -C deps/t-digest-c library_static
+
+libtdigest: $(LIBTDIGEST)
+
+$(MODULE_SO): $(MODULE_OBJ) $(DEPS) $(LIBTDIGEST)
+	$(LD) $^ -o $@ $(SHOBJ_LDFLAGS) $(MODULE_LDFLAGS)
 
 build: all
 	$(MAKE) -C tests build-test
+
+unittests: $(MODULE_SO)
+	$(MAKE) -C tests unittests
+
+flowtests: $(MODULE_SO)
+	$(MAKE) -C tests flowtests
 
 test: $(MODULE_SO)
 	$(MAKE) -C tests test
@@ -81,11 +105,13 @@ setup:
 
 static-analysis-docker:
 	$(MAKE) clean
+	$(MAKE) libtdigest
 	docker run -v $(ROOT)/:/RedisBloom/ --user "$(username):$(usergroup)" $(INFER_DOCKER) bash -c "cd RedisBloom && CC=clang infer run --fail-on-issue --biabduction --skip-analysis-in-path ".*rmutil.*"  -- make"
 
 static-analysis:
 	$(MAKE) clean
-	$(INFER) run --fail-on-issue --biabduction --skip-analysis-in-path ".*rmutil.*" -- $(MAKE)
+	$(MAKE) libtdigest
+	 CC=clang $(INFER) run --fail-on-issue --biabduction --skip-analysis-in-path ".*rmutil.*" -- $(MAKE)
 	
 format:
 	clang-format -style=file -i $(SRCDIR)/*
@@ -103,6 +129,7 @@ clean:
 	find . -name '*.gcov' -delete
 	find . -name '*.gcda' -delete
 	find . -name '*.gcno' -delete
+	$(MAKE) -C deps/t-digest-c clean
 	$(MAKE) -C tests clean
 
 distclean: clean
@@ -117,7 +144,6 @@ docker_push: docker
 print_version:  $(SRCDIR)/version.h $(SRCDIR)/print_version.c
 	@$(CC) -o $@ -DPRINT_VERSION_TARGET $(SRCDIR)/$@.c
 
-#	$(MAKE) CFLAGS="-fprofile-arcs -ftest-coverage" LDFLAGS="-fprofile-arcs"
 
 COV_DIR=tmp/lcov
 
